@@ -32,7 +32,8 @@
 <body>
     <div id="root"></div>
 
-    <script type="text/babel" data-type="module">
+    <!-- Added data-presets="react" to prevent Babel from breaking ES Module imports -->
+    <script type="text/babel" data-type="module" data-presets="react">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, onAuthStateChanged, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, onSnapshot, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
@@ -40,7 +41,6 @@
         const { useState, useEffect } = React;
 
         // --- FIREBASE CONFIGURATION ---
-        // When deploying to GitHub, replace the fallback object below with your actual Firebase config.
         let firebaseConfig = {
             apiKey: "AIzaSyDtASb9yQk0gCZwvciDWGWNrsSmJhd2dwI",
   authDomain: "tactical-scholar.firebaseapp.com",
@@ -50,8 +50,13 @@
   appId: "1:279084724211:web:79038ebb7d947001222c86"
         };
         
-        if (typeof __firebase_config !== 'undefined') {
-            firebaseConfig = JSON.parse(__firebase_config);
+        // Added safety try-catch block for parsing environment variables
+        if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+            try {
+                firebaseConfig = JSON.parse(__firebase_config);
+            } catch (e) {
+                console.error("Error parsing Firebase config", e);
+            }
         }
 
         const app = initializeApp(firebaseConfig);
