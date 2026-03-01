@@ -1,0 +1,1210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tactical Scholar | Multiplayer Educational Chess</title>
+    
+    <!-- React & Babel Standalone -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = { theme: { extend: { fontFamily: { sans: ['Inter', 'sans-serif'] } } } }
+    </script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
+    
+    <style>
+        body { margin: 0; padding: 0; background-color: #020617; overflow: hidden; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #475569; }
+        .loader { border: 3px solid rgba(255,255,255,0.1); border-left-color: #3b82f6; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, getDoc, updateDoc, onSnapshot, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const { useState, useEffect } = React;
+
+        // --- FIREBASE CONFIGURATION ---
+        // When deploying to GitHub, replace the fallback object below with your actual Firebase config.
+        let firebaseConfig = {
+            apiKey: "AIzaSyDtASb9yQk0gCZwvciDWGWNrsSmJhd2dwI",
+  authDomain: "tactical-scholar.firebaseapp.com",
+  projectId: "tactical-scholar",
+  storageBucket: "tactical-scholar.firebasestorage.app",
+  messagingSenderId: "279084724211",
+  appId: "1:279084724211:web:79038ebb7d947001222c86"
+        };
+        
+        if (typeof __firebase_config !== 'undefined') {
+            firebaseConfig = JSON.parse(__firebase_config);
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'tactical-scholar-multi';
+
+        // Helper to generate paths based on mandatory rules
+        const getPublicCollection = (colName) => collection(db, 'artifacts', appId, 'public', 'data', colName);
+        const getPublicDoc = (colName, docId) => doc(db, 'artifacts', appId, 'public', 'data', colName, docId);
+
+        // --- CHESS LOGIC ENGINE ---
+        const setupBoard = () => {
+          const board = Array(64).fill(null);
+          const createPiece = (team, type, icon, lives, points, originalIndex) => ({ 
+            team, type, icon, lives, maxLives: lives, points, originalIndex, hasMoved: false, inactive: false 
+          });
+
+          // Black (Top)
+          board[0] = createPiece('black', 'Rook', '♜', 5, 5, 0);
+          board[1] = createPiece('black', 'Knight', '♞', 3, 3, 1);
+          board[2] = createPiece('black', 'Bishop', '♝', 3, 3, 2);
+          board[3] = createPiece('black', 'Queen', '♛', 10, 10, 3);
+          board[4] = createPiece('black', 'King', '♚', null, 0, 4);
+          board[5] = createPiece('black', 'Bishop', '♝', 3, 3, 5);
+          board[6] = createPiece('black', 'Knight', '♞', 3, 3, 6);
+          board[7] = createPiece('black', 'Rook', '♜', 5, 5, 7);
+          for (let i = 8; i < 16; i++) board[i] = createPiece('black', 'Pawn', '♟', 1, 1, i);
+
+          // White (Bottom)
+          for (let i = 48; i < 56; i++) board[i] = createPiece('white', 'Pawn', '♙', 1, 1, i);
+          board[56] = createPiece('white', 'Rook', '♖', 5, 5, 56);
+          board[57] = createPiece('white', 'Knight', '♘', 3, 3, 57);
+          board[58] = createPiece('white', 'Bishop', '♗', 3, 3, 58);
+          board[59] = createPiece('white', 'Queen', '♕', 10, 10, 59);
+          board[60] = createPiece('white', 'King', '♔', null, 0, 60);
+          board[61] = createPiece('white', 'Bishop', '♗', 3, 3, 61);
+          board[62] = createPiece('white', 'Knight', '♘', 3, 3, 62);
+          board[63] = createPiece('white', 'Rook', '♖', 5, 5, 63);
+
+          return board;
+        };
+
+        const indexToNotation = (index) => {
+          const files = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+          return `${files[index % 8]}${8 - Math.floor(index / 8)}`;
+        };
+
+        const isSquareAttacked = (targetIdx, board, attackerTeam) => {
+          for (let i = 0; i < 64; i++) {
+            if (board[i] && board[i].team === attackerTeam && !board[i].inactive) {
+              const moves = getPseudoLegalMoves(i, board, null, false);
+              if (moves.includes(targetIdx)) return true;
+            }
+          }
+          return false;
+        };
+
+        const getPseudoLegalMoves = (index, board, lastMove, checkCastling = true) => {
+          const piece = board[index];
+          if (!piece || piece.inactive) return [];
+          const moves = [];
+          const row = Math.floor(index / 8);
+          const col = index % 8;
+          const dir = piece.team === 'white' ? -1 : 1;
+
+          const addMove = (r, c) => {
+            if (r < 0 || r > 7 || c < 0 || c > 7) return false;
+            const targetIdx = r * 8 + c;
+            const target = board[targetIdx];
+            if (!target) { moves.push(targetIdx); return true; }
+            if (target.team !== piece.team) { moves.push(targetIdx); }
+            return false;
+          };
+
+          const slide = (dRow, dCol) => {
+            for (let r = row + dRow, c = col + dCol; r >= 0 && r <= 7 && c >= 0 && c <= 7; r += dRow, c += dCol) {
+              if (!addMove(r, c)) break;
+            }
+          };
+
+          if (piece.type === 'Pawn') {
+            if (row + dir >= 0 && row + dir <= 7 && !board[(row + dir) * 8 + col]) {
+              moves.push((row + dir) * 8 + col);
+              if ((piece.team === 'white' && row === 6) || (piece.team === 'black' && row === 1)) {
+                if (!board[(row + dir * 2) * 8 + col]) moves.push((row + dir * 2) * 8 + col);
+              }
+            }
+            [col - 1, col + 1].forEach(c => {
+              if (c >= 0 && c <= 7 && row + dir >= 0 && row + dir <= 7) {
+                const targetIdx = (row + dir) * 8 + c;
+                const target = board[targetIdx];
+                if (target && target.team !== piece.team) moves.push(targetIdx);
+                
+                if (!target && lastMove && lastMove.piece.type === 'Pawn' && lastMove.piece.team !== piece.team) {
+                  if (lastMove.to === row * 8 + c && Math.abs(lastMove.from - lastMove.to) === 16) {
+                    moves.push(targetIdx); 
+                  }
+                }
+              }
+            });
+          }
+
+          if (['Rook', 'Queen'].includes(piece.type)) { slide(1, 0); slide(-1, 0); slide(0, 1); slide(0, -1); }
+          if (['Bishop', 'Queen'].includes(piece.type)) { slide(1, 1); slide(1, -1); slide(-1, 1); slide(-1, -1); }
+          if (piece.type === 'Knight') {
+            [[2, 1], [2, -1], [-2, 1], [-2, -1], [1, 2], [1, -2], [-1, 2], [-1, -2]].forEach(([dr, dc]) => addMove(row + dr, col + dc));
+          }
+          
+          if (piece.type === 'King') {
+            [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([dr, dc]) => addMove(row + dr, col + dc));
+            
+            if (checkCastling && !piece.hasMoved) {
+              const enemyTeam = piece.team === 'white' ? 'black' : 'white';
+              if (board[index + 3] && board[index + 3].type === 'Rook' && !board[index + 3].hasMoved) {
+                if (!board[index + 1] && !board[index + 2]) {
+                  if (!isSquareAttacked(index, board, enemyTeam) && !isSquareAttacked(index + 1, board, enemyTeam) && !isSquareAttacked(index + 2, board, enemyTeam)) {
+                    moves.push(index + 2);
+                  }
+                }
+              }
+              if (board[index - 4] && board[index - 4].type === 'Rook' && !board[index - 4].hasMoved) {
+                if (!board[index - 1] && !board[index - 2] && !board[index - 3]) {
+                  if (!isSquareAttacked(index, board, enemyTeam) && !isSquareAttacked(index - 1, board, enemyTeam) && !isSquareAttacked(index - 2, board, enemyTeam)) {
+                    moves.push(index - 2);
+                  }
+                }
+              }
+            }
+          }
+          return moves;
+        };
+
+        const getLegalMoves = (index, board, lastMove) => {
+          const pseudoMoves = getPseudoLegalMoves(index, board, lastMove, true);
+          const piece = board[index];
+          if(piece.inactive) return [];
+          const enemyTeam = piece.team === 'white' ? 'black' : 'white';
+
+          return pseudoMoves.filter(toIdx => {
+            if (board[toIdx] && board[toIdx].type === 'King') return false;
+
+            const tempBoard = [...board];
+            if (piece.type === 'Pawn' && Math.abs(index - toIdx) !== 8 && Math.abs(index - toIdx) !== 16 && !tempBoard[toIdx]) {
+              const epCaptureIdx = toIdx + (piece.team === 'white' ? 8 : -8);
+              tempBoard[epCaptureIdx] = null;
+            }
+            tempBoard[toIdx] = tempBoard[index];
+            tempBoard[index] = null;
+
+            let kingIdx = tempBoard.findIndex(p => p && p.team === piece.team && p.type === 'King');
+            return !isSquareAttacked(kingIdx, tempBoard, enemyTeam);
+          });
+        };
+
+        const checkGameStatus = (team, board, lastMove) => {
+          const enemyTeam = team === 'white' ? 'black' : 'white';
+          let hasLegalMoves = false;
+          let kingIdx = board.findIndex(p => p && p.team === team && p.type === 'King');
+
+          for (let i = 0; i < 64; i++) {
+            if (board[i] && board[i].team === team) {
+              if (getLegalMoves(i, board, lastMove).length > 0) {
+                hasLegalMoves = true;
+                break;
+              }
+            }
+          }
+          const inCheck = isSquareAttacked(kingIdx, board, enemyTeam);
+          if (!hasLegalMoves) return inCheck ? 'checkmate' : 'stalemate';
+          return inCheck ? 'check' : 'active';
+        };
+
+        const promotionIcons = {
+          white: { Queen: '♕', Knight: '♘', Rook: '♖', Bishop: '♗' },
+          black: { Queen: '♛', Knight: '♞', Rook: '♜', Bishop: '♝' }
+        };
+        const promotionStats = {
+          Queen: { lives: 10, points: 10 },
+          Rook: { lives: 5, points: 5 },
+          Bishop: { lives: 3, points: 3 },
+          Knight: { lives: 3, points: 3 }
+        };
+
+        // --- COMPONENTS ---
+
+        const AdminIcon = () => (
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+        );
+
+        const ManualEntryModule = ({ user }) => {
+            const [subject, setSubject] = useState('Practice Paper 1');
+            const [topic, setTopic] = useState('Module 1');
+            const [tier, setTier] = useState('Easy');
+            const [questionText, setQuestionText] = useState('');
+            const [options, setOptions] = useState(['', '', '', '']);
+            const [correctIndex, setCorrectIndex] = useState(0);
+            
+            const [db, setDb] = useState([]);
+
+            useEffect(() => {
+                if(!user) return;
+                const unsub = onSnapshot(getPublicCollection('questions'), (snapshot) => {
+                    const qs = [];
+                    snapshot.forEach(doc => qs.push({ id: doc.id, ...doc.data() }));
+                    setDb(qs);
+                }, (error) => console.error("Error fetching questions:", error));
+                return () => unsub();
+            }, [user]);
+
+            const tierMap = {
+                'Easy': { label: 'Pawn (1 Pt)', target: 8 },
+                'Medium': { label: 'Knight/Bishop (3 Pts)', target: 12 },
+                'Hard': { label: 'Rook (5 Pts)', target: 10 },
+                'Very Difficult': { label: 'Queen (10 Pts)', target: 10 },
+            };
+
+            const counts = {
+                'Easy': db.filter(q => q.difficulty === 'Easy').length,
+                'Medium': db.filter(q => q.difficulty === 'Medium').length,
+                'Hard': db.filter(q => q.difficulty === 'Hard').length,
+                'Very Difficult': db.filter(q => q.difficulty === 'Very Difficult').length,
+                'Total': db.length
+            };
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if(!questionText.trim() || options.some(o => !o.trim())) {
+                    alert("Please fill out the question and all options.");
+                    return;
+                }
+                const newQuestion = {
+                    subject, topic, difficulty: tier, questionText,
+                    options: options.map(o => ` ${o}`),
+                    correctAnswerIndex: correctIndex
+                };
+                
+                try {
+                    await addDoc(getPublicCollection('questions'), newQuestion);
+                    setQuestionText('');
+                    setOptions(['', '', '', '']);
+                    setCorrectIndex(0);
+                } catch(err) {
+                    console.error(err);
+                    alert("Failed to save question.");
+                }
+            };
+
+            const ProgressBar = ({ label, current, max, colorClass }) => (
+                <div className="flex-1">
+                    <div className="flex justify-between text-[10px] uppercase font-bold text-slate-400 mb-1">
+                        <span>{label}</span>
+                        <span>{current} / {max}</span>
+                    </div>
+                    <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                        <div className={`h-full ${colorClass} transition-all duration-300`} style={{ width: `${Math.min(100, (current/max)*100)}%` }}></div>
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="max-w-4xl mx-auto">
+                    <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-xl mb-6">
+                        <h2 className="text-xl font-black text-white uppercase tracking-wider mb-4">Board Completion Progress</h2>
+                        <div className="flex flex-col gap-4">
+                            <ProgressBar label="Total Board Questions" current={counts.Total} max={40} colorClass="bg-blue-500" />
+                            <div className="flex gap-4">
+                                <ProgressBar label="Easy (Pawns)" current={counts.Easy} max={tierMap['Easy'].target} colorClass="bg-green-500" />
+                                <ProgressBar label="Med (K/B)" current={counts['Medium']} max={tierMap['Medium'].target} colorClass="bg-amber-500" />
+                                <ProgressBar label="Hard (Rooks)" current={counts.Hard} max={tierMap['Hard'].target} colorClass="bg-orange-500" />
+                                <ProgressBar label="V.Hard (Queens)" current={counts['Very Difficult']} max={tierMap['Very Difficult'].target} colorClass="bg-red-500" />
+                            </div>
+                        </div>
+                    </div>
+
+                    <form onSubmit={handleSubmit} className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-xl space-y-6">
+                        <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+                            <h3 className="text-lg font-bold text-white uppercase tracking-wider">Manual Question Entry</h3>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                                <label className="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1 block">Subject</label>
+                                <input type="text" value={subject} onChange={e => setSubject(e.target.value)} className="w-full bg-slate-950 border border-slate-700 text-white rounded px-4 py-2 outline-none focus:border-blue-500" />
+                            </div>
+                            <div>
+                                <label className="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1 block">Topic</label>
+                                <input type="text" value={topic} onChange={e => setTopic(e.target.value)} className="w-full bg-slate-950 border border-slate-700 text-white rounded px-4 py-2 outline-none focus:border-blue-500" />
+                            </div>
+                            <div>
+                                <label className="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1 block">Target Piece (Tier)</label>
+                                <select value={tier} onChange={e => setTier(e.target.value)} className="w-full bg-slate-950 border border-slate-700 text-white rounded px-4 py-2 outline-none focus:border-blue-500">
+                                    {Object.entries(tierMap).map(([key, val]) => (
+                                        <option key={key} value={key}>{val.label}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1 block">Question Text (HTML allowed for sub/sup)</label>
+                            <textarea 
+                                value={questionText} onChange={e => setQuestionText(e.target.value)}
+                                placeholder="E.g. What is the formula for Water (H<sub>2</sub>O)?"
+                                className="w-full bg-slate-950 border border-slate-700 text-white rounded px-4 py-3 outline-none focus:border-blue-500 h-24 custom-scrollbar"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="text-xs text-slate-400 uppercase tracking-widest font-bold mb-3 block">Answer Options</label>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {[0, 1, 2, 3].map((idx) => (
+                                    <div key={idx} className={`flex items-center gap-3 bg-slate-950 border rounded-lg px-3 py-2 transition-colors ${correctIndex === idx ? 'border-green-500 bg-green-900/10' : 'border-slate-700'}`}>
+                                        <input 
+                                            type="radio" 
+                                            name="correctOption" 
+                                            checked={correctIndex === idx} 
+                                            onChange={() => setCorrectIndex(idx)}
+                                            className="w-4 h-4 text-green-500 focus:ring-green-500 bg-slate-800 border-slate-600"
+                                        />
+                                        <span className="text-slate-500 font-bold w-6">
+                                            {String.fromCharCode(65 + idx)})
+                                        </span>
+                                        <input 
+                                            type="text"
+                                            value={options[idx]}
+                                            onChange={(e) => {
+                                                const newOpts = [...options];
+                                                newOpts[idx] = e.target.value;
+                                                setOptions(newOpts);
+                                            }}
+                                            placeholder={`Option ${idx + 1}`}
+                                            className="w-full bg-transparent text-white outline-none"
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="border-t border-slate-800 pt-4">
+                            <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-lg font-bold uppercase tracking-wider transition-colors shadow-lg shadow-blue-500/20">
+                                Add Question to Database
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            );
+        };
+
+        const AdminPanel = ({ user, onExit }) => {
+          const [activeTab, setActiveTab] = useState('manual');
+          const [authStep, setAuthStep] = useState('login'); // login, verified
+          const [id, setId] = useState('');
+          const [pwd, setPwd] = useState('');
+          const [err, setErr] = useState('');
+          
+          const [db, setDb] = useState([]);
+          const [gameRules, setGameRules] = useState({ kingsPrivilege: true, inactiveOnRespawn: true, hangarPenaltyLimit: 2 });
+
+          useEffect(() => {
+              if (authStep !== 'verified' || !user) return;
+              
+              const unsubQs = onSnapshot(getPublicCollection('questions'), (snap) => {
+                  const qs = [];
+                  snap.forEach(d => qs.push({ id: d.id, ...d.data() }));
+                  setDb(qs);
+              }, (err) => console.error(err));
+
+              const unsubRules = onSnapshot(getPublicDoc('config', 'gameRules'), (docSnap) => {
+                  if (docSnap.exists()) {
+                      setGameRules(docSnap.data());
+                  } else {
+                      setDoc(getPublicDoc('config', 'gameRules'), gameRules);
+                  }
+              }, (err) => console.error(err));
+
+              return () => { unsubQs(); unsubRules(); };
+          }, [user, authStep]);
+
+          const handleLogin = (e) => {
+              e.preventDefault();
+              if (id === 'admin' && pwd === 'admin') setAuthStep('verified');
+              else setErr('Invalid Credentials');
+          };
+
+          const handleUpdateRule = async (key, val) => {
+              const newRules = { ...gameRules, [key]: val };
+              try {
+                  await setDoc(getPublicDoc('config', 'gameRules'), newRules);
+              } catch(e) { console.error("Error updating rules", e); }
+          };
+
+          const handleDeleteQuestion = async (qId) => {
+              try {
+                  await deleteDoc(getPublicDoc('questions', qId));
+              } catch (e) { console.error("Error deleting", e); }
+          }
+
+          if (authStep === 'login') {
+            return (
+                <div className="min-h-screen w-screen bg-slate-950 flex flex-col items-center justify-center p-4">
+                    <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl w-full max-w-sm">
+                        <h2 className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-amber-400 to-orange-500 uppercase tracking-widest mb-6 text-center">Admin Access</h2>
+                        {err && <div className="bg-red-900/50 border border-red-500 text-red-300 px-3 py-2 rounded mb-4 text-xs font-bold text-center">{err}</div>}
+                        <form onSubmit={handleLogin} className="flex flex-col gap-4">
+                            <div>
+                                <label className="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1 block">Admin ID</label>
+                                <input type="text" value={id} onChange={e => setId(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded px-4 py-2 text-slate-200 outline-none focus:border-amber-500 transition-colors" />
+                            </div>
+                            <div>
+                                <label className="text-xs text-slate-400 uppercase tracking-widest font-bold mb-1 block">Password</label>
+                                <input type="password" value={pwd} onChange={e => setPwd(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded px-4 py-2 text-slate-200 outline-none focus:border-amber-500 transition-colors" />
+                            </div>
+                            <button type="submit" className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold uppercase tracking-wider py-3 rounded-lg mt-2 transition-colors">
+                                Authenticate
+                            </button>
+                        </form>
+                        <button onClick={onExit} className="w-full text-slate-500 hover:text-slate-300 text-xs font-bold uppercase tracking-wider mt-4">
+                            Return to Lobby
+                        </button>
+                    </div>
+                </div>
+            );
+          }
+          
+          return (
+            <div className="min-h-screen w-screen bg-slate-950 text-slate-200 flex flex-col md:flex-row font-sans overflow-hidden">
+              <aside className="w-full md:w-64 bg-slate-900 border-r border-slate-800 flex flex-col shadow-2xl z-10 flex-shrink-0">
+                <div className="p-6 border-b border-slate-800 flex justify-between items-center md:block">
+                  <div>
+                    <h1 className="text-xl font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-amber-400 to-orange-500 uppercase leading-none">
+                      Admin Core
+                    </h1>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-2 hidden md:block">System Control</p>
+                  </div>
+                  <button onClick={onExit} className="md:hidden text-xs bg-slate-800 px-3 py-1 rounded">Exit</button>
+                </div>
+                
+                <nav className="flex-1 p-4 flex flex-row md:flex-col gap-2 overflow-x-auto custom-scrollbar">
+                  <button onClick={() => setActiveTab('manual')} className={`flex items-center whitespace-nowrap gap-3 px-4 py-3 rounded-lg text-sm font-bold uppercase tracking-wider transition-all ${activeTab === 'manual' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}>
+                     Manual Entry
+                  </button>
+                  <button onClick={() => setActiveTab('database')} className={`flex items-center whitespace-nowrap gap-3 px-4 py-3 rounded-lg text-sm font-bold uppercase tracking-wider transition-all ${activeTab === 'database' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}>
+                     Question DB
+                  </button>
+                  <button onClick={() => setActiveTab('rules')} className={`flex items-center whitespace-nowrap gap-3 px-4 py-3 rounded-lg text-sm font-bold uppercase tracking-wider transition-all ${activeTab === 'rules' ? 'bg-amber-500/10 text-amber-500 border border-amber-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}>
+                     Game Rules
+                  </button>
+                </nav>
+                
+                <div className="p-4 border-t border-slate-800 hidden md:block">
+                  <button onClick={onExit} className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs font-bold uppercase tracking-wider text-slate-300 transition-colors">
+                     Exit to Lobby
+                  </button>
+                </div>
+              </aside>
+              
+              <main className="flex-1 p-4 md:p-8 overflow-y-auto custom-scrollbar">
+                
+                {activeTab === 'manual' && <ManualEntryModule user={user} />}
+
+                {activeTab === 'database' && (
+                  <div className="max-w-6xl mx-auto animate-in fade-in duration-300">
+                    <div className="flex justify-between items-end mb-8">
+                      <div>
+                        <h2 className="text-3xl font-black text-white uppercase tracking-wider">Question Database</h2>
+                        <p className="text-slate-400 text-sm mt-1">Currently active questions used globally in the Combat Phase.</p>
+                      </div>
+                      <div className="bg-slate-900 border border-slate-700 px-3 py-1 rounded text-xs text-amber-500 font-bold">Total: {db.length}</div>
+                    </div>
+                    
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl shadow-xl overflow-hidden">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-slate-950 border-b border-slate-800 text-xs uppercase tracking-widest text-slate-500">
+                          <tr>
+                            <th className="px-6 py-4 font-semibold w-32">Topic</th>
+                            <th className="px-6 py-4 font-semibold w-24">Tier</th>
+                            <th className="px-6 py-4 font-semibold">Question Preview</th>
+                            <th className="px-6 py-4 font-semibold text-right w-24">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/50">
+                          {db.length === 0 ? (
+                              <tr><td colSpan="4" className="px-6 py-8 text-center text-slate-500 italic">No questions in database. Use the Entry Module.</td></tr>
+                          ) : db.map((row, i) => (
+                            <tr key={i} className="hover:bg-slate-800/50 transition-colors group">
+                              <td className="px-6 py-4 text-slate-400 text-xs truncate max-w-[120px]">{row.topic}</td>
+                              <td className="px-6 py-4 text-amber-400 font-medium text-xs">{row.difficulty}</td>
+                              <td className="px-6 py-4 text-slate-300">
+                                <div className="truncate max-w-xl" dangerouslySetInnerHTML={{__html: row.questionText}}></div>
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                <button 
+                                    onClick={() => handleDeleteQuestion(row.id)}
+                                    className="text-red-500 hover:text-red-400 text-xs font-bold uppercase tracking-wider opacity-0 group-hover:opacity-100 transition-opacity"
+                                >Delete</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'rules' && (
+                  <div className="max-w-3xl mx-auto animate-in fade-in duration-300">
+                    <div className="mb-8">
+                      <h2 className="text-3xl font-black text-white uppercase tracking-wider">Game Rules Configuration</h2>
+                      <p className="text-slate-400 text-sm mt-1">Modify core engine parameters for all multiplayer matches.</p>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl flex justify-between items-center">
+                        <div>
+                          <h3 className="font-bold text-slate-200 text-lg">King's Privilege</h3>
+                          <p className="text-sm text-slate-500 mt-1">Allow the King to bypass trivia questions during captures.</p>
+                        </div>
+                        <div 
+                          onClick={() => handleUpdateRule('kingsPrivilege', !gameRules.kingsPrivilege)}
+                          className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${gameRules.kingsPrivilege ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.3)]' : 'bg-slate-700'}`}
+                        >
+                          <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${gameRules.kingsPrivilege ? 'right-1' : 'left-1'}`}></div>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl flex justify-between items-center">
+                        <div>
+                          <h3 className="font-bold text-slate-200 text-lg">Inactive on Respawn</h3>
+                          <p className="text-sm text-slate-500 mt-1">Pieces returned to the board skip one turn before they can move.</p>
+                        </div>
+                        <div 
+                          onClick={() => handleUpdateRule('inactiveOnRespawn', !gameRules.inactiveOnRespawn)}
+                          className={`w-12 h-6 rounded-full relative cursor-pointer transition-colors ${gameRules.inactiveOnRespawn ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.3)]' : 'bg-slate-700'}`}
+                        >
+                          <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${gameRules.inactiveOnRespawn ? 'right-1' : 'left-1'}`}></div>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl flex justify-between items-center">
+                        <div>
+                          <h3 className="font-bold text-slate-200 text-lg">Hangar Penalty Limit</h3>
+                          <p className="text-sm text-slate-500 mt-1">Number of turns allowed to clear a blocked home square.</p>
+                        </div>
+                        <select 
+                          value={gameRules.hangarPenaltyLimit}
+                          onChange={(e) => handleUpdateRule('hangarPenaltyLimit', parseInt(e.target.value))}
+                          className="bg-slate-950 border border-slate-700 text-white rounded px-4 py-2 font-bold outline-none focus:border-blue-500"
+                        >
+                          <option value={1}>1 Turn</option>
+                          <option value={2}>2 Turns</option>
+                          <option value={3}>3 Turns</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </main>
+            </div>
+          );
+        };
+
+        const Lobby = ({ user, onJoinMatch, onOpenAdmin }) => {
+            const [matches, setMatches] = useState([]);
+
+            useEffect(() => {
+                if(!user) return;
+                const unsub = onSnapshot(getPublicCollection('matches'), (snap) => {
+                    const m = [];
+                    snap.forEach(doc => m.push({ id: doc.id, ...doc.data() }));
+                    setMatches(m.filter(x => x.status !== 'finished'));
+                }, (err) => console.error(err));
+                return () => unsub();
+            }, [user]);
+
+            const createMatch = async () => {
+                try {
+                    const initialGameState = {
+                        board: setupBoard(),
+                        turn: 'white',
+                        scores: { white: 0, black: 0 },
+                        hangar: [],
+                        capturedPieces: { white: [], black: [] },
+                        gameStatus: 'active',
+                        combatEvent: null,
+                        pendingPromotion: null,
+                        lastMove: null
+                    };
+                    const docRef = await addDoc(getPublicCollection('matches'), {
+                        players: { white: user.uid, black: null },
+                        status: 'waiting',
+                        gameState: JSON.stringify(initialGameState)
+                    });
+                    onJoinMatch(docRef.id);
+                } catch(e) { console.error("Error creating match", e); }
+            };
+
+            const joinMatch = async (matchId) => {
+                try {
+                    await updateDoc(getPublicDoc('matches', matchId), {
+                        'players.black': user.uid,
+                        status: 'playing'
+                    });
+                    onJoinMatch(matchId);
+                } catch(e) { console.error("Error joining", e); }
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col items-center justify-center p-8 font-sans">
+                    <div className="max-w-2xl w-full text-center">
+                        <h1 className="text-4xl font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-300 uppercase mb-2">Tactical Scholar</h1>
+                        <p className="text-slate-500 uppercase tracking-widest mb-12">Multiplayer Arena</p>
+                        
+                        <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl mb-8">
+                            <div className="flex justify-between items-center border-b border-slate-800 pb-4 mb-6">
+                                <h2 className="text-xl font-bold uppercase tracking-wider">Available Matches</h2>
+                                <button onClick={createMatch} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded font-bold uppercase tracking-widest transition-colors text-sm">
+                                    + Host Game
+                                </button>
+                            </div>
+                            
+                            <div className="space-y-4 max-h-[40vh] overflow-y-auto custom-scrollbar pr-2">
+                                {matches.length === 0 ? (
+                                    <p className="text-slate-500 italic py-8">No open matches found. Host a new game to begin.</p>
+                                ) : (
+                                    matches.map(m => {
+                                        const isMyMatch = m.players.white === user.uid || m.players.black === user.uid;
+                                        return (
+                                            <div key={m.id} className="bg-slate-950 border border-slate-800 p-4 rounded-lg flex justify-between items-center">
+                                                <div className="text-left">
+                                                    <p className="font-mono text-sm text-slate-400 mb-1">Match ID: {m.id.substring(0,6)}...</p>
+                                                    <p className="text-xs font-bold uppercase tracking-widest">
+                                                        {m.status === 'waiting' ? <span className="text-amber-500">Waiting for Opponent</span> : <span className="text-green-500">In Progress</span>}
+                                                    </p>
+                                                </div>
+                                                {isMyMatch ? (
+                                                    <button onClick={() => onJoinMatch(m.id)} className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white px-6 py-2 rounded text-sm font-bold uppercase tracking-widest transition-colors">Rejoin</button>
+                                                ) : m.status === 'waiting' ? (
+                                                    <button onClick={() => joinMatch(m.id)} className="bg-green-600 hover:bg-green-500 text-white px-6 py-2 rounded text-sm font-bold uppercase tracking-widest transition-colors shadow-lg shadow-green-900/50">Join as Black</button>
+                                                ) : (
+                                                    <button disabled className="bg-slate-800 text-slate-500 px-6 py-2 rounded text-sm font-bold uppercase tracking-widest cursor-not-allowed">Full</button>
+                                                )}
+                                            </div>
+                                        );
+                                    })
+                                )}
+                            </div>
+                        </div>
+
+                        <button onClick={onOpenAdmin} className="text-xs font-bold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-2 justify-center w-full">
+                            <AdminIcon /> Enter Admin Panel
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        const MultiplayerGame = ({ user, matchId, onExit }) => {
+          const [match, setMatch] = useState(null);
+          const [db, setDb] = useState([]);
+          const [gameRules, setGameRules] = useState({ kingsPrivilege: true, inactiveOnRespawn: true, hangarPenaltyLimit: 2 });
+          
+          const [selectedSquare, setSelectedSquare] = useState(null);
+          const [validMoves, setValidMoves] = useState([]);
+          const [showGuides, setShowGuides] = useState(true);
+
+          // Listeners for match state, questions, and rules
+          useEffect(() => {
+              if(!user || !matchId) return;
+
+              const unsubMatch = onSnapshot(getPublicDoc('matches', matchId), (docSnap) => {
+                  if (docSnap.exists()) {
+                      const data = docSnap.data();
+                      data.gameState = JSON.parse(data.gameState);
+                      setMatch({ id: docSnap.id, ...data });
+                  }
+              }, (err) => console.error(err));
+
+              const unsubQs = onSnapshot(getPublicCollection('questions'), (snap) => {
+                  const qs = [];
+                  snap.forEach(d => qs.push({ id: d.id, ...d.data() }));
+                  setDb(qs);
+              }, (err) => console.error(err));
+
+              const unsubRules = onSnapshot(getPublicDoc('config', 'gameRules'), (docSnap) => {
+                  if (docSnap.exists()) setGameRules(docSnap.data());
+              }, (err) => console.error(err));
+
+              return () => { unsubMatch(); unsubQs(); unsubRules(); };
+          }, [matchId, user]);
+
+          if (!match) return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white"><div className="loader"></div></div>;
+
+          const playerColor = match.players.white === user.uid ? 'white' : (match.players.black === user.uid ? 'black' : 'spectator');
+          const gs = match.gameState; // Derived game state
+          const isMyTurn = gs.turn === playerColor && match.status === 'playing';
+
+          const updateGameState = async (newState) => {
+              try {
+                  await updateDoc(getPublicDoc('matches', matchId), {
+                      gameState: JSON.stringify(newState)
+                  });
+              } catch(e) { console.error("Error updating game state", e); }
+          };
+
+          const handleSquareClick = (index) => {
+            if (!isMyTurn || gs.combatEvent || gs.pendingPromotion || gs.gameStatus === 'checkmate' || gs.gameStatus === 'stalemate') return;
+
+            const clickedPiece = gs.board[index];
+
+            if (clickedPiece && clickedPiece.team === gs.turn) {
+              if (clickedPiece.inactive) return;
+              if (selectedSquare === index) {
+                setSelectedSquare(null);
+                setValidMoves([]);
+              } else {
+                setSelectedSquare(index);
+                setValidMoves(getLegalMoves(index, gs.board, gs.lastMove));
+              }
+              return;
+            }
+
+            if (selectedSquare !== null && validMoves.includes(index)) {
+              const movingPiece = gs.board[selectedSquare];
+              const isEnPassant = movingPiece.type === 'Pawn' && !clickedPiece && Math.abs(selectedSquare - index) !== 8 && Math.abs(selectedSquare - index) !== 16;
+              
+              let actualTargetIdx = index;
+              let targetPiece = clickedPiece;
+
+              if (isEnPassant) {
+                actualTargetIdx = index + (gs.turn === 'white' ? 8 : -8);
+                targetPiece = gs.board[actualTargetIdx];
+              }
+
+              if (targetPiece && targetPiece.team !== gs.turn) {
+                if (movingPiece.type === 'King' && gameRules.kingsPrivilege) {
+                  executeCapture(selectedSquare, index, actualTargetIdx, targetPiece);
+                } else {
+                  const tierMap = { 'Pawn': 'Easy', 'Knight': 'Medium', 'Bishop': 'Medium', 'Rook': 'Hard', 'Queen': 'Very Difficult' };
+                  const targetDiff = tierMap[targetPiece.type] || 'Easy';
+                  const pool = db.filter(q => q.difficulty === targetDiff);
+                  
+                  let selectedQuestion = null;
+                  if (pool.length > 0) {
+                      selectedQuestion = pool[Math.floor(Math.random() * pool.length)];
+                  } else {
+                      selectedQuestion = { 
+                          questionText: `No manual ${targetDiff} questions in DB. What is 2 + 2?`, 
+                          options: ["A) 3", "B) 4", "C) 5", "D) 6"], 
+                          correctAnswerIndex: 1 
+                      };
+                  }
+
+                  const newGs = { ...gs, combatEvent: {
+                    attackerIdx: selectedSquare,
+                    targetIdx: index, 
+                    actualTargetIdx: actualTargetIdx, 
+                    targetPiece: targetPiece,
+                    questionData: selectedQuestion
+                  }};
+                  updateGameState(newGs);
+                  setSelectedSquare(null);
+                  setValidMoves([]);
+                }
+              } else {
+                executeStandardMove(selectedSquare, index);
+              }
+            } else {
+              setSelectedSquare(null);
+              setValidMoves([]);
+            }
+          };
+
+          const finalizeTurn = (currentBoard, currentHangar, newLastMove, currentCaptured = gs.capturedPieces, currentScores = gs.scores) => {
+            let nextHangar = [];
+            let boardAfterHangar = [...currentBoard];
+            let pendingHangar = [];
+            let nextCaptured = { white: [...currentCaptured.white], black: [...currentCaptured.black] };
+
+            boardAfterHangar = boardAfterHangar.map(p => p && p.team === gs.turn ? { ...p, inactive: false } : p);
+
+            currentHangar.forEach(item => {
+              if (boardAfterHangar[item.originalIndex] === null) {
+                boardAfterHangar[item.originalIndex] = { ...item.piece, inactive: gameRules.inactiveOnRespawn }; 
+              } else {
+                pendingHangar.push(item);
+              }
+            });
+
+            pendingHangar.forEach(item => {
+              if (item.team === gs.turn) {
+                const updatedMovesLeft = item.movesLeft - 1;
+                if (updatedMovesLeft > 0) {
+                  nextHangar.push({ ...item, movesLeft: updatedMovesLeft });
+                } else {
+                  const opponent = gs.turn === 'white' ? 'black' : 'white';
+                  nextCaptured[opponent].push(item.piece);
+                }
+              } else {
+                nextHangar.push(item);
+              }
+            });
+
+            const nextTurn = gs.turn === 'white' ? 'black' : 'white';
+            const newStatus = checkGameStatus(nextTurn, boardAfterHangar, newLastMove);
+
+            updateGameState({
+                board: boardAfterHangar,
+                hangar: nextHangar,
+                capturedPieces: nextCaptured,
+                lastMove: newLastMove,
+                turn: nextTurn,
+                gameStatus: newStatus,
+                scores: currentScores,
+                combatEvent: null,
+                pendingPromotion: null
+            });
+            setSelectedSquare(null);
+            setValidMoves([]);
+          };
+
+          const executeStandardMove = (fromIdx, toIdx) => {
+            const newBoard = [...gs.board];
+            let movingPiece = { ...newBoard[fromIdx], hasMoved: true };
+            
+            if (movingPiece.type === 'King' && Math.abs(fromIdx - toIdx) === 2) {
+              if (toIdx > fromIdx) { 
+                newBoard[toIdx - 1] = { ...newBoard[toIdx + 1], hasMoved: true };
+                newBoard[toIdx + 1] = null;
+              } else { 
+                newBoard[toIdx + 1] = { ...newBoard[toIdx - 2], hasMoved: true };
+                newBoard[toIdx - 2] = null;
+              }
+            }
+
+            newBoard[toIdx] = movingPiece;
+            newBoard[fromIdx] = null;
+            
+            if (movingPiece.type === 'Pawn' && (Math.floor(toIdx / 8) === 0 || Math.floor(toIdx / 8) === 7)) {
+              updateGameState({ ...gs, board: newBoard, pendingPromotion: { fromIdx, toIdx, movingPiece } });
+              return;
+            }
+            
+            finalizeTurn(newBoard, gs.hangar, { piece: movingPiece, from: fromIdx, to: toIdx });
+          };
+
+          const executeCapture = (attackerIdx, targetIdx, actualTargetIdx, targetPiece) => {
+            const newBoard = [...gs.board];
+            let newHangar = [...gs.hangar];
+            let newCaptured = { white: [...gs.capturedPieces.white], black: [...gs.capturedPieces.black] };
+
+            newBoard[actualTargetIdx] = null;
+
+            let movingPiece = { ...newBoard[attackerIdx], hasMoved: true };
+            newBoard[targetIdx] = movingPiece;
+            newBoard[attackerIdx] = null;
+
+            const target = { ...targetPiece };
+            target.lives -= 1;
+
+            if (target.lives > 0) {
+              if (newBoard[target.originalIndex] === null) {
+                newBoard[target.originalIndex] = { ...target, inactive: gameRules.inactiveOnRespawn };
+              } else {
+                newHangar.push({ piece: target, originalIndex: target.originalIndex, team: target.team, movesLeft: gameRules.hangarPenaltyLimit });
+              }
+            } else {
+              newCaptured[gs.turn].push(target);
+            }
+
+            const newScores = { ...gs.scores, [gs.turn]: gs.scores[gs.turn] + target.points };
+
+            if (movingPiece.type === 'Pawn' && (Math.floor(targetIdx / 8) === 0 || Math.floor(targetIdx / 8) === 7)) {
+              updateGameState({ ...gs, board: newBoard, scores: newScores, hangar: newHangar, capturedPieces: newCaptured, combatEvent: null, pendingPromotion: { fromIdx: attackerIdx, toIdx: targetIdx, movingPiece } });
+              return;
+            }
+
+            finalizeTurn(newBoard, newHangar, { piece: movingPiece, from: attackerIdx, to: targetIdx }, newCaptured, newScores);
+          };
+
+          const handleQuizAnswer = (isCorrect) => {
+            if (isCorrect) {
+              executeCapture(gs.combatEvent.attackerIdx, gs.combatEvent.targetIdx, gs.combatEvent.actualTargetIdx, gs.combatEvent.targetPiece);
+            } else {
+              finalizeTurn(gs.board, gs.hangar, gs.lastMove);
+            }
+          };
+
+          const handlePromotionChoice = (type) => {
+            const { fromIdx, toIdx, movingPiece } = gs.pendingPromotion;
+            const newBoard = [...gs.board];
+            
+            const promotedPiece = {
+              ...movingPiece,
+              type: type,
+              icon: promotionIcons[movingPiece.team][type],
+              lives: promotionStats[type].lives,
+              maxLives: promotionStats[type].lives,
+              points: promotionStats[type].points
+            };
+
+            newBoard[toIdx] = promotedPiece;
+            finalizeTurn(newBoard, gs.hangar, { piece: promotedPiece, from: fromIdx, to: toIdx });
+          };
+
+          const PlayerProfile = ({ team, score, capturedList, isActive }) => (
+            <div className={`flex justify-between items-center w-full px-4 py-2 rounded-lg transition-colors duration-300 ${isActive ? 'bg-slate-800/80 shadow-inner ring-1 ring-blue-500/50' : 'bg-transparent'}`}>
+              <div className="flex items-start gap-4 overflow-hidden w-full">
+                <div className={`w-10 h-10 mt-1 rounded shadow-md border-2 flex items-center justify-center font-bold uppercase text-xs flex-shrink-0 ${team === 'white' ? 'bg-slate-100 text-slate-800 border-white' : 'bg-slate-900 text-slate-400 border-slate-700'}`}>
+                  {team === 'white' ? 'P1' : 'P2'}
+                </div>
+                <div className="flex flex-col min-w-0 flex-1">
+                  <div className="flex justify-between items-center">
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-bold text-slate-200 capitalize tracking-wide text-lg">{team} {playerColor === team ? '(You)' : ''}</span>
+                        <span className="text-sm text-slate-500 font-mono">({score} pts)</span>
+                      </div>
+                      {isActive && (
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <span className="flex h-2.5 w-2.5 relative"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span></span>
+                        </div>
+                      )}
+                  </div>
+                  <div className="flex gap-1.5 mt-1 overflow-x-auto overflow-y-hidden custom-scrollbar pb-1 max-h-[30px] items-center">
+                    {capturedList.length === 0 ? <span className="text-[11px] text-slate-600 italic">No captures</span> : capturedList.map((p, i) => (
+                        <span key={i} className={`text-lg leading-none ${p.team === 'white' ? 'text-white drop-shadow-md' : 'text-slate-900 drop-shadow-[0_0_1px_rgba(255,255,255,0.4)]'}`}>{p.icon}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+
+          // Rotate board so current player is always at the bottom
+          const displayBoard = playerColor === 'black' ? [...gs.board].reverse() : gs.board;
+
+          return (
+            <div className="h-screen w-screen bg-slate-950 text-slate-200 flex flex-col font-sans overflow-hidden">
+              <header className="h-14 flex-none border-b border-slate-800/80 px-4 md:px-8 flex justify-between items-center bg-slate-900/50 backdrop-blur-sm z-20">
+                 <div className="flex items-center gap-4">
+                     <button onClick={onExit} className="text-slate-500 hover:text-white transition-colors">◀ Exit</button>
+                     <h1 className="text-xl md:text-2xl font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-indigo-300 uppercase leading-none">Tactical Scholar</h1>
+                 </div>
+                 <div className="flex gap-2 items-center">
+                    {match.status === 'waiting' && <span className="text-[10px] px-2 py-1 rounded bg-amber-900/50 text-amber-400 font-black animate-pulse border border-amber-500 hidden sm:inline-block">WAITING FOR P2</span>}
+                    {gs.gameStatus === 'check' && <span className="text-[10px] px-2 py-1 rounded bg-red-900/50 text-red-400 font-black animate-pulse border border-red-500 hidden sm:inline-block">CHECK!</span>}
+                    {gs.gameStatus === 'checkmate' && <span className="text-[10px] px-2 py-1 rounded bg-red-900 text-white font-black uppercase border border-red-500 hidden sm:inline-block">🏆 Checkmate!</span>}
+                    <button onClick={() => setShowGuides(!showGuides)} className="text-[10px] md:text-xs font-bold uppercase tracking-wider px-3 py-1.5 bg-slate-800 border border-slate-700 hover:border-slate-500 rounded text-slate-400 transition-colors">
+                      {showGuides ? 'Hide Guides' : 'Show Guides'}
+                    </button>
+                 </div>
+              </header>
+
+              <div className="flex-1 min-h-0 flex flex-col md:flex-row max-w-[1600px] w-full mx-auto p-4 gap-6">
+                
+                <div className="flex-1 min-w-0 flex flex-col justify-center items-center h-full relative">
+                    <div className="w-full max-w-[calc(100vh-220px)] flex-none mb-2">
+                        <PlayerProfile team={playerColor === 'black' ? 'white' : 'black'} score={gs.scores[playerColor === 'black' ? 'white' : 'black']} capturedList={gs.capturedPieces[playerColor === 'black' ? 'white' : 'black']} isActive={gs.turn === (playerColor === 'black' ? 'white' : 'black')} />
+                    </div>
+
+                    <div className={`flex-shrink min-h-0 w-full max-w-[calc(100vh-220px)] aspect-square border-4 md:border-8 border-slate-900 shadow-[0_0_40px_rgba(0,0,0,0.6)] rounded-lg overflow-hidden bg-slate-800 relative ring-1 ring-slate-700 ${match.status === 'waiting' ? 'opacity-50 grayscale pointer-events-none' : ''}`}>
+                      <div className="w-full h-full grid grid-cols-8 grid-rows-8">
+                        {displayBoard.map((piece, renderIndex) => {
+                          const actualIndex = playerColor === 'black' ? 63 - renderIndex : renderIndex;
+                          const row = Math.floor(actualIndex / 8);
+                          const col = actualIndex % 8;
+                          const isLight = (row + col) % 2 === 0;
+                          const isSelected = selectedSquare === actualIndex;
+                          const isValidMove = validMoves.includes(actualIndex);
+                          
+                          const isEnemySquare = isValidMove && ((piece && piece.team !== gs.turn) || (gs.board[selectedSquare]?.type === 'Pawn' && !piece && Math.abs(selectedSquare - actualIndex) !== 8 && Math.abs(selectedSquare - actualIndex) !== 16));
+                          
+                          return (
+                            <div 
+                              key={actualIndex}
+                              onClick={() => handleSquareClick(actualIndex)}
+                              className={`
+                                relative flex items-center justify-center transition-colors duration-150
+                                ${piece?.inactive || !isMyTurn ? 'cursor-not-allowed' : 'cursor-pointer'}
+                                ${isLight ? 'bg-slate-300' : 'bg-slate-500'}
+                                ${isSelected ? 'bg-blue-400/80 shadow-[inset_0_0_20px_rgba(0,0,0,0.3)]' : ''}
+                                ${showGuides && isValidMove && !isEnemySquare ? 'hover:bg-blue-300' : ''}
+                                ${showGuides && isEnemySquare ? 'hover:bg-red-400' : ''}
+                              `}
+                            >
+                              {showGuides && isValidMove && !isEnemySquare && <div className="absolute w-[20%] h-[20%] bg-blue-600/50 rounded-full"></div>}
+                              {showGuides && isEnemySquare && <div className="absolute inset-0 border-[3px] md:border-[4px] border-red-500/80 m-[5%] rounded-sm"></div>}
+
+                              {piece && (
+                                <span className={`
+                                  select-none transform transition-transform flex items-center justify-center
+                                  w-[80%] h-[80%] text-[10vw] md:text-[min(6vw,6.5vh)] leading-none relative
+                                  ${piece.inactive ? 'opacity-50 grayscale' : ''}
+                                  ${piece.team === 'white' ? 'text-white drop-shadow-[0_4px_4px_rgba(0,0,0,0.6)]' : 'text-black drop-shadow-[0_2px_3px_rgba(255,255,255,0.4)]'}
+                                  ${isSelected ? 'scale-110' : ''}
+                                  ${piece.type === 'King' && gs.gameStatus === 'check' && piece.team === gs.turn ? 'bg-red-500/50 rounded-full animate-pulse shadow-[0_0_15px_rgba(239,68,68,0.8)]' : ''}
+                                `}>
+                                  {piece.icon}
+                                </span>
+                              )}
+                              
+                              {piece?.inactive && <div className="absolute inset-0 flex items-center justify-center bg-slate-900/30 rounded backdrop-blur-[1px] pointer-events-none"><span className="text-[clamp(12px,2vw,20px)] drop-shadow-md">🔒</span></div>}
+                              {piece && piece.lives !== null && <div className={`absolute top-[3%] right-[3%] text-[clamp(8px,1vw,11px)] font-black px-1.5 py-0.5 rounded shadow-lg border z-10 ${piece.team === 'white' ? 'bg-indigo-600 text-white border-indigo-400' : 'bg-slate-800 text-amber-500 border-amber-500/50'}`}>{piece.lives}</div>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="w-full max-w-[calc(100vh-220px)] flex-none mt-2">
+                        <PlayerProfile team={playerColor === 'black' ? 'black' : 'white'} score={gs.scores[playerColor === 'black' ? 'black' : 'white']} capturedList={gs.capturedPieces[playerColor === 'black' ? 'black' : 'white']} isActive={gs.turn === (playerColor === 'black' ? 'black' : 'white')} />
+                    </div>
+                </div>
+
+                <div className="hidden md:flex flex-none w-[320px] lg:w-[380px] h-full pb-2">
+                  <div className="bg-slate-900/90 w-full backdrop-blur-md border border-slate-700/50 rounded-xl p-5 shadow-2xl flex flex-col overflow-hidden relative">
+                    <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-indigo-600"></div>
+                    <h2 className="text-xs text-slate-400 uppercase tracking-widest mb-4 font-bold flex items-center gap-3">
+                      <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse shadow-[0_0_8px_rgba(59,130,246,0.8)]"></span> The Hangar
+                    </h2>
+                    
+                    <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar">
+                      {gs.hangar.length === 0 ? (
+                        <div className="text-center text-slate-600 text-sm italic mt-8 border border-slate-800 border-dashed rounded-lg p-6">No pieces temporarily out.</div>
+                      ) : (
+                        gs.hangar.map((item, idx) => (
+                          <div key={idx} className="bg-slate-800 border border-slate-600 rounded-lg p-3 shadow-md relative overflow-hidden animate-in slide-in-from-right-2 duration-200">
+                            <div className="absolute top-0 left-0 w-1 h-full bg-red-500"></div>
+                            <div className="flex justify-between items-start mb-2 pl-2">
+                              <div className="flex items-center gap-3">
+                                <span className={`text-4xl drop-shadow-sm ${item.team === 'white' ? 'text-white' : 'text-black'}`}>{item.piece.icon}</span>
+                                <div>
+                                  <div className="font-bold text-slate-200 text-sm uppercase tracking-wide leading-tight">{item.team} {item.piece.type}</div>
+                                  <div className="text-xs text-slate-400 font-mono mt-0.5">ORIGIN: {indexToNotation(item.originalIndex)}</div>
+                                </div>
+                              </div>
+                              <div className="bg-slate-900 border border-slate-700 text-[10px] px-1.5 py-0.5 rounded text-slate-300 font-bold">{item.piece.lives}/{item.piece.maxLives} LIVES</div>
+                            </div>
+                            <div className="bg-red-950/30 border border-red-900/50 rounded p-2 flex items-start gap-2 pl-2 mt-2">
+                              <span className="text-red-500 text-sm">⚠️</span>
+                              <div className="text-[11px] text-red-300 leading-snug"><span className="font-bold text-red-400 uppercase tracking-wider block">Blocked ({item.movesLeft} Moves)</span> Clear square {indexToNotation(item.originalIndex)} to deploy.</div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Overlays */}
+              {gs.pendingPromotion && isMyTurn && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                  <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-xl"></div>
+                  <div className="relative bg-slate-900 border border-slate-700 w-full max-w-sm rounded-2xl shadow-[0_0_50px_rgba(0,0,0,1)] overflow-hidden animate-in zoom-in-95 duration-200">
+                    <div className="bg-slate-800/80 border-b border-slate-700/50 px-6 py-4 text-center">
+                      <h3 className="font-black text-lg text-slate-100 uppercase tracking-widest">Unit Promotion</h3>
+                    </div>
+                    <div className="p-6 grid grid-cols-2 gap-4">
+                      {['Queen', 'Knight', 'Rook', 'Bishop'].map((type) => (
+                        <button key={type} onClick={() => handlePromotionChoice(type)} className="flex flex-col items-center justify-center py-6 px-4 bg-slate-800/50 border border-slate-700 hover:border-blue-500 rounded-xl transition-all focus:outline-none focus:ring-2 focus:ring-blue-500">
+                          <span className={`text-6xl mb-3 drop-shadow-md ${gs.pendingPromotion.movingPiece.team === 'white' ? 'text-white' : 'text-black'}`}>{promotionIcons[gs.pendingPromotion.movingPiece.team][type]}</span>
+                          <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">{type}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {gs.combatEvent && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                  <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-xl"></div>
+                  <div className="relative bg-slate-900 border border-slate-700 w-full max-w-lg rounded-2xl shadow-[0_0_50px_rgba(0,0,0,1)] overflow-hidden animate-in fade-in zoom-in-95 flex flex-col max-h-[90vh]">
+                    <div className="bg-slate-800/80 border-b border-slate-700/50 px-6 py-4 flex justify-between items-center relative overflow-hidden flex-shrink-0">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500"></div>
+                      <div className="flex items-center gap-4">
+                        <div className={`w-14 h-14 flex items-center justify-center rounded-xl text-4xl bg-slate-900 shadow-inner border border-slate-700 ${gs.combatEvent.targetPiece.team === 'white' ? 'text-white' : 'text-black'}`}>{gs.combatEvent.targetPiece.icon}</div>
+                        <div>
+                          <h3 className="font-black text-lg text-slate-100 uppercase tracking-widest">{gs.combatEvent.targetPiece.team} {gs.combatEvent.targetPiece.type}</h3>
+                          <p className="text-[10px] text-slate-400 uppercase tracking-wider">Defense Protocol</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-br from-blue-400 to-indigo-600">{gs.combatEvent.targetPiece.lives}</div>
+                        <div className="text-[9px] text-slate-500 uppercase font-bold tracking-widest">Lives</div>
+                      </div>
+                    </div>
+
+                    <div className="p-6 overflow-y-auto custom-scrollbar flex-1">
+                      {isMyTurn ? (
+                          <>
+                              <div className="mb-6">
+                                <div className="flex justify-between items-center mb-3">
+                                  <span className="text-[9px] font-black uppercase tracking-widest border border-amber-500/30 bg-amber-500/10 text-amber-500 px-2 py-0.5 rounded-full">
+                                    Difficulty: {gs.combatEvent.questionData?.difficulty}
+                                  </span>
+                                  <span className="text-xs font-bold text-slate-300 tracking-wider">Value: {gs.combatEvent.targetPiece.points} Pts</span>
+                                </div>
+                                <div className="text-lg text-slate-200 leading-relaxed font-serif italic border-l-4 border-slate-700 pl-4 py-1" dangerouslySetInnerHTML={{ __html: gs.combatEvent.questionData?.questionText || "Question Missing" }} />
+                              </div>
+                              <div className="grid grid-cols-1 gap-2">
+                                {(gs.combatEvent.questionData?.options || []).map((opt, i) => (
+                                  <button key={i} onClick={() => handleQuizAnswer(i === gs.combatEvent.questionData?.correctAnswerIndex)} className="w-full text-left px-4 py-3 bg-slate-800/50 border border-slate-700 hover:border-blue-500 hover:bg-slate-800 rounded-lg text-slate-300 font-medium text-sm transition-all focus:outline-none focus:ring-1 focus:ring-blue-500 flex gap-2">
+                                    <span dangerouslySetInnerHTML={{ __html: opt }} />
+                                  </button>
+                                ))}
+                              </div>
+                          </>
+                      ) : (
+                          <div className="py-12 flex flex-col items-center text-center">
+                              <div className="loader mb-4 border-l-red-500"></div>
+                              <h3 className="text-lg font-bold uppercase text-red-400 tracking-widest">Under Attack</h3>
+                              <p className="text-slate-400 text-sm mt-2">Opponent is currently attempting to decrypt your unit's defense protocol.</p>
+                          </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [view, setView] = useState('lobby'); // lobby, game, admin
+            const [currentMatchId, setCurrentMatchId] = useState(null);
+
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch(e) { console.error("Auth Error", e); }
+                };
+                initAuth();
+                const unsub = onAuthStateChanged(auth, setUser);
+                return () => unsub();
+            }, []);
+
+            if (!user) return <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white"><div className="loader"></div></div>;
+            if (view === 'admin') return <AdminPanel user={user} onExit={() => setView('lobby')} />;
+            if (view === 'game') return <MultiplayerGame user={user} matchId={currentMatchId} onExit={() => setView('lobby')} />;
+            
+            return <Lobby user={user} onJoinMatch={(id) => {setCurrentMatchId(id); setView('game')}} onOpenAdmin={() => setView('admin')} />;
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
